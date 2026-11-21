@@ -35,6 +35,10 @@ func _process(_delta: float) -> bool:
 		battle_end()
 	elif step == 66:
 		mechanics_tests()
+	elif step == 67:
+		super_tests()
+	elif step == 68:
+		wave4_tests()
 	elif step == 70:
 		save_tests()
 	elif step > 72:
@@ -155,6 +159,131 @@ func save_tests() -> void:
 			if not d.has(k):
 				gaps.append(l + ":" + k)
 	check(gaps.is_empty(), "every language has every text %s" % str(gaps.slice(0, 8)))
+
+
+## Battle mechanics on live battles, taken over from the Oksi Block test (super game at 10 000 = level 1,
+## the admin battle = level 4); setup() is called the same way the old game did.
+func live_battle(stage: int, ups: Dictionary, helper := false) -> Node2D:
+	var tk: Node2D = game._new_battle_node()
+	root.add_child(tk)
+	tk.setup(stage, game.font, game.Data.TANK_SKINS["classic"], game.Data.ARENAS["wasteland"], 1, game.Data.MINES_MAX, ups, false, helper)
+	return tk
+
+
+func drop(tk: Node2D) -> void:
+	tk.get_parent().remove_child(tk)
+	tk.free()
+
+
+func super_tests() -> void:
+	var tk := live_battle(1, game.upgrades)
+	check(tk.mines_left == game.Data.MINES_MAX, "every battle starts with the standard mines")
+	tk.super_charge = 1.0
+	tk._fire_super()
+	check(tk.super_charge == 0.0, "super shot fired")
+	tk._drop_mine()
+	check(tk.mines_used == 1, "mine placed")
+	check(tk._path_next(Vector2(0.5, 0.5), tk.GEN) != Vector2i(-1, -1), "enemy pathfinding finds the generator")
+	check(tk.total_enemies == 10, "10 enemies on level 1 (the old 10 000 super game)")
+	var boss := {"id": 999, "p": Vector2(6.5, 3.5), "d": 2, "type": 5, "hp": 10, "maxhp": 10, "inv": 0.0, "hit": 0.0}
+	tk.enemies.append(boss)
+	var sb := {"o": 0, "hits": {}, "d": 2, "p": Vector2(6.5, 2.5)}
+	for k in 8:
+		tk._super_step(sb, Vector2(6.5, 3.0 + k * 0.1), 2)
+	check(int(boss["hp"]) == 5, "one super shot takes half of the super tank (hp %d)" % int(boss["hp"]))
+	for k in 4:
+		tk._damage_enemy(boss, 1)
+	check(int(boss["hp"]) == 1 and not boss.has("dead"), "super tank survives 9 normal hits in total")
+	tk.enemies.erase(boss)
+	# The boss comes with the last 3 tanks, and they enter even when the field is full.
+	var keep_e: Array = tk.enemies.duplicate()
+	var keep_s: Array = tk.spawns.duplicate()
+	var keep_n: int = tk.to_spawn
+	var keep_b: bool = tk.boss_out
+	var dummy := {"p": Vector2(3.5, 9.5)}
+	tk.enemies.clear()
+	for k in tk.max_active - 1:
+		tk.enemies.append(dummy)
+	tk.spawns.clear()
+	tk.to_spawn = 5
+	tk.boss_out = false
+	var kinds: Array = []
+	for k in 12:
+		if k == 2:
+			tk.enemies.append(dummy)  # field full from now on
+		tk.spawn_timer = 0.0
+		tk._update_spawns(0.01)
+		for sp in tk.spawns:
+			kinds.append(int(sp["type"]))
+		tk.spawns.clear()
+	check(kinds.size() == 5 and kinds[1] == 5 and not kinds.slice(2).has(5) and kinds[0] != 5 and tk.to_spawn == 0,
+		"super tank spawns with the last 3 enemies, who come in even over the limit (%s)" % str(kinds))
+	var be := {"role": "breaker", "p": (tk.player["p"] as Vector2) + Vector2(1, 0), "goal": Vector2.ZERO}
+	tk._update_goal(be)
+	check(be["goal"] == tk.GEN, "super tank heads for the generator even right next to the player")
+	tk.enemies = keep_e
+	tk.spawns = keep_s
+	tk.to_spawn = keep_n
+	tk.boss_out = keep_b
+	drop(tk)
+
+
+func wave4_tests() -> void:
+	var tk := live_battle(4, {"armor": 0, "speed": 0, "power": 0, "gun": 0, "ally": 0})
+	check(tk.total_enemies == 20 and tk.elvl == 2, "level-4 battle: 20 enemies, level 2")
+	var g0: int = tk.gen_hp
+	tk._hit_tile(6, 12, 0)
+	check(tk.gen_hp == g0 - 1, "own shot damages the generator")
+	tk.gen_hit = 0.0
+	tk.player["p"] = Vector2(6.5, 1.5)
+	tk.spawns.clear()
+	tk.enemies.clear()
+	tk.spawn_timer = 0.0
+	for i in 3:
+		tk._update_spawns(0.01)
+		tk.spawn_timer = 0.0
+	var near := false
+	for sp in tk.spawns:
+		near = near or (sp["p"] as Vector2).distance_to(tk.player["p"]) < 3.0
+	check(tk.spawns.size() > 0 and not near, "enemies do not spawn next to a camping player")
+	for sp in tk.spawns:
+		sp["t"] = 1.0
+	tk._update_spawns(0.01)
+	check(tk.enemies.size() > 0 and float(tk.enemies[0]["inv"]) > 1.0, "fresh enemies have a spawn shield")
+	var en: Dictionary = tk.enemies[0]
+	en["role"] = "raider"
+	en["p"] = Vector2(6.5, 7.5)
+	en["react"] = 0.0
+	en["shoot"] = 0.0
+	tk.player["p"] = Vector2(0.5, 0.5)
+	tk.bullets.clear()
+	tk._update_goal(en)
+	tk._update_enemies(0.05)
+	check(en["goal"] == tk.GEN and tk.bullets.size() > 0 and int(tk.bullets[0]["d"]) == 2, "enemy unseen by player shells the generator")
+	var hps := {}
+	for ty in [0, 1, 3, 4, 2]:
+		hps[ty] = tk.E_HP[ty]
+	check(hps[0] == 1 and hps[1] == 1 and hps[3] == 1 and hps[4] == 2 and hps[2] == 3, "light 1 hit, medium 2, heavy 3")
+	en["carrier"] = true
+	en["inv"] = 0.0
+	en["hp"] = 1
+	var nb: int = tk.bonuses.size()
+	tk._damage_enemy(en, 1)
+	check(tk.bonuses.size() == nb + 1 and (tk.bonuses.back()["p"] as Vector2).distance_to(en["p"]) >= 0.0, "a flashing carrier drops a bonus somewhere on the map")
+	tk._apply_bonus("rapid")
+	check(float(tk.buffs["rapid"]) > 10.0, "temporary pick-up boosts the player")
+	drop(tk)
+	var t1 := live_battle(4, {"armor": 2, "speed": 0, "power": 0, "gun": 0, "ally": 0})
+	check(t1.armor_max >= 2, "tank upgrades applied in battle")
+	var e0: int = t1.elvl
+	var t0: int = t1.total_enemies
+	drop(t1)
+	var tk2 := live_battle(4, {"armor": 3, "speed": 3, "power": 3, "gun": 3, "ally": 0}, true)
+	check(tk2.elvl > e0 and tk2.total_enemies > t0, "enemies get stronger when the player tank is upgraded")
+	check(tk2._ally_alive() and tk2.max_pb == 2 and tk2.gun_lvl == 3, "helper joins the battle, cannon upgrades apply")
+	tk2._shoot(tk2.player, 0)
+	check(int(tk2.bullets.back()["dmg"]) == 2, "cannon level 3 deals double damage")
+	drop(tk2)
 
 
 func mechanics_tests() -> void:
